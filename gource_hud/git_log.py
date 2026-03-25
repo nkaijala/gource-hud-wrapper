@@ -230,3 +230,31 @@ class Anonymizer:
                 ))
             result.append(Commit(timestamp=c.timestamp, hash=c.hash, author_email=anon_author, files=anon_files))
         return result
+
+
+_STATUS_TO_GOURCE_ACTION: dict[FileStatus, str] = {
+    FileStatus.ADDED: "A", FileStatus.MODIFIED: "M", FileStatus.DELETED: "D",
+    FileStatus.RENAMED: "M", FileStatus.COPIED: "A", FileStatus.TYPE_CHANGED: "M",
+}
+
+
+def write_gource_log(commits: list[Commit], output_path: Path) -> None:
+    with open(output_path, "w") as f:
+        for commit in commits:
+            for file in commit.files:
+                action = _STATUS_TO_GOURCE_ACTION.get(file.status, "M")
+                f.write(f"{commit.timestamp}|{commit.author_email}|{action}|{file.path}\n")
+
+
+def parse_git_log(repo_path: str, since: str) -> list[Commit]:
+    result_a = subprocess.run(
+        ["git", "log", f"--since={since}", "--numstat", "--format=%ct%x09%H%x09%ae", "--no-merges"],
+        capture_output=True, encoding="utf-8", errors="replace", check=True, cwd=repo_path,
+    )
+    result_b = subprocess.run(
+        ["git", "log", f"--since={since}", "--name-status", "--format=%ct%x09%H", "--no-merges"],
+        capture_output=True, encoding="utf-8", errors="replace", check=True, cwd=repo_path,
+    )
+    numstat_commits = _parse_numstat_output(result_a.stdout)
+    name_status_commits = _parse_name_status_output(result_b.stdout)
+    return _merge_commits(numstat_commits, name_status_commits)

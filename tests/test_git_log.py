@@ -1,5 +1,8 @@
 # tests/test_git_log.py
-from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry, _merge_commits, _NumstatCommit, _NameStatusCommit, Anonymizer
+from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry, _merge_commits, _NumstatCommit, _NameStatusCommit, Anonymizer, write_gource_log
+from pathlib import Path
+import tempfile
+import re as re_mod
 
 def test_file_status_values():
     assert FileStatus.ADDED.value == "A"
@@ -220,3 +223,68 @@ class TestAnonymizer:
         f = result[0].files[0]
         assert f.old_path is not None
         assert f.old_path.startswith("f")
+
+
+class TestWriteGourceLog:
+    def test_basic_output(self):
+        commits = [Commit(1700000000, "a" * 40, "Dev_1", [
+            FileChange("d0001/f0001.py", FileStatus.ADDED, 10, 0, False),
+            FileChange("d0001/f0002.py", FileStatus.MODIFIED, 5, 3, False),
+            FileChange("d0001/f0003.py", FileStatus.DELETED, 0, 8, False),
+        ])]
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False) as f:
+            path = Path(f.name)
+        try:
+            write_gource_log(commits, path)
+            lines = path.read_text().splitlines()
+            assert len(lines) == 3
+            assert lines[0] == "1700000000|Dev_1|A|d0001/f0001.py"
+            assert lines[1] == "1700000000|Dev_1|M|d0001/f0002.py"
+            assert lines[2] == "1700000000|Dev_1|D|d0001/f0003.py"
+        finally:
+            path.unlink()
+    def test_rename_maps_to_M(self):
+        commits = [Commit(100, "a" * 40, "dev", [FileChange("new.py", FileStatus.RENAMED, 0, 0, False)])]
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False) as f:
+            path = Path(f.name)
+        try:
+            write_gource_log(commits, path)
+            assert "|M|" in path.read_text()
+        finally:
+            path.unlink()
+    def test_copy_maps_to_A(self):
+        commits = [Commit(100, "a" * 40, "dev", [FileChange("copy.py", FileStatus.COPIED, 0, 0, False)])]
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False) as f:
+            path = Path(f.name)
+        try:
+            write_gource_log(commits, path)
+            assert "|A|" in path.read_text()
+        finally:
+            path.unlink()
+    def test_type_changed_maps_to_M(self):
+        commits = [Commit(100, "a" * 40, "dev", [FileChange("link.txt", FileStatus.TYPE_CHANGED, 0, 0, False)])]
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False) as f:
+            path = Path(f.name)
+        try:
+            write_gource_log(commits, path)
+            assert "|M|" in path.read_text()
+        finally:
+            path.unlink()
+
+
+class TestRoundTrip:
+    def test_anonymized_tokens_only(self):
+        commits = [Commit(100, "a" * 40, "alice@real.com", [
+            FileChange("src/secret.py", FileStatus.MODIFIED, 10, 2, False),
+            FileChange("tests/secret_test.py", FileStatus.ADDED, 5, 0, False),
+        ])]
+        anon = Anonymizer()
+        result = anon.anonymize_commits(commits)
+        for c in result:
+            assert re_mod.match(r"^Dev_\d+$", c.author_email)
+            for f in c.files:
+                parts = f.path.split("/")
+                for p in parts[:-1]:
+                    assert re_mod.match(r"^d\d{4}$", p), f"Bad dir token: {p}"
+                filename = parts[-1]
+                assert re_mod.match(r"^f\d{4}(\.\w+)?$", filename), f"Bad file token: {filename}"
