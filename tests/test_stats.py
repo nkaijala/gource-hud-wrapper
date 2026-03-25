@@ -1,4 +1,7 @@
-from gource_hud.stats import DayBucket, bucket_commits, rolling_sum, rolling_unique_count
+from gource_hud.stats import (
+    DayBucket, bucket_commits, rolling_sum, rolling_unique_count,
+    running_maxima, cumulative_series, percentile,
+)
 from gource_hud.git_log import Commit, FileChange, FileStatus
 
 DAY = 86400
@@ -117,3 +120,59 @@ class TestRollingUniqueCount:
 
     def test_empty(self):
         assert rolling_unique_count([], {}, DAY) == {}
+
+
+class TestRunningMaxima:
+    def test_increasing(self):
+        days = [DAY * i for i in range(3)]
+        values = {DAY * 0: 5, DAY * 1: 10, DAY * 2: 3}
+        result = running_maxima(days, values)
+        assert result == {DAY * 0: 5, DAY * 1: 10, DAY * 2: 10}
+
+    def test_empty(self):
+        assert running_maxima([], {}) == {}
+
+
+class TestCumulativeSeries:
+    def test_basic(self):
+        days = [DAY * i for i in range(3)]
+        values = {DAY * 0: 8, DAY * 1: 5, DAY * 2: 2}
+        result = cumulative_series(days, values)
+        assert result == {DAY * 0: 8, DAY * 1: 13, DAY * 2: 15}
+
+    def test_negative_deltas(self):
+        days = [DAY * i for i in range(3)]
+        values = {DAY * 0: -5, DAY * 1: -10, DAY * 2: 0}
+        result = cumulative_series(days, values)
+        assert result == {DAY * 0: -5, DAY * 1: -15, DAY * 2: -15}
+
+    def test_empty(self):
+        assert cumulative_series([], {}) == {}
+
+
+class TestPercentile:
+    def test_empty(self):
+        assert percentile([], 0.5) == 0
+
+    def test_single_value(self):
+        assert percentile([42], 0.5) == 42
+        assert percentile([42], 0.9) == 42
+
+    def test_two_values_median(self):
+        assert percentile([10, 20], 0.5) == 15
+
+    def test_two_values_p90(self):
+        assert percentile([10, 20], 0.9) == 19
+
+    def test_three_values_median(self):
+        assert percentile([10, 20, 30], 0.5) == 20
+
+    def test_three_values_p90(self):
+        assert percentile([10, 20, 30], 0.9) == 28
+
+    def test_five_values_p90(self):
+        assert percentile([1, 2, 3, 4, 5], 0.9) == 5
+
+    def test_six_values(self):
+        assert percentile([1, 3, 5, 7, 9, 11], 0.5) == 6
+        assert percentile([1, 3, 5, 7, 9, 11], 0.9) == 10

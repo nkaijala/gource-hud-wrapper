@@ -82,3 +82,35 @@ def rolling_unique_count(days: list[int], sets_by_day: dict[int, set[str]], wind
                     del counter[elem]
         result[t] = len(counter)
     return result
+
+
+def running_maxima(days: list[int], values: dict[int, int]) -> dict[int, int]:
+    result: dict[int, int] = {}
+    max_so_far = 0
+    for t in days:
+        v = values[t]
+        if v > max_so_far:
+            max_so_far = v
+        result[t] = max_so_far
+    return result
+
+
+def cumulative_series(days: list[int], values: dict[int, int]) -> dict[int, int]:
+    result: dict[int, int] = {}
+    running = 0
+    for t in days:
+        running += values[t]
+        result[t] = running
+    return result
+
+
+def percentile(sorted_values: list[int], p: float) -> int:
+    if not sorted_values:
+        return 0
+    n = len(sorted_values)
+    k = (n - 1) * p
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return sorted_values[int(k)]
+    return int(round(sorted_values[f] * (c - k) + sorted_values[c] * (k - f)))
