@@ -1,4 +1,4 @@
-from gource_hud.stats import DayBucket, bucket_commits
+from gource_hud.stats import DayBucket, bucket_commits, rolling_sum, rolling_unique_count
 from gource_hud.git_log import Commit, FileChange, FileStatus
 
 DAY = 86400
@@ -54,3 +54,66 @@ class TestBucketCommits:
         days, buckets = bucket_commits([])
         assert days == []
         assert buckets == {}
+
+
+class TestRollingSum:
+    def test_1d_window(self):
+        days = [DAY * i for i in range(3)]
+        values = {DAY * 0: 10, DAY * 1: 5, DAY * 2: 3}
+        result = rolling_sum(days, values, DAY)
+        assert result == {DAY * 0: 10, DAY * 1: 5, DAY * 2: 3}
+
+    def test_7d_window_accumulates(self):
+        days = [DAY * i for i in range(3)]
+        values = {DAY * 0: 10, DAY * 1: 5, DAY * 2: 3}
+        result = rolling_sum(days, values, 7 * DAY)
+        assert result[DAY * 0] == 10
+        assert result[DAY * 1] == 15
+        assert result[DAY * 2] == 18
+
+    def test_eviction(self):
+        days = [DAY * i for i in range(8)]
+        values = {d: (100 if d == 0 else 0) for d in days}
+        result = rolling_sum(days, values, 7 * DAY)
+        assert result[DAY * 6] == 100
+        assert result[DAY * 7] == 0
+
+    def test_empty(self):
+        assert rolling_sum([], {}, DAY) == {}
+
+
+class TestRollingUniqueCount:
+    def test_single_author_all_days(self):
+        days = [DAY * i for i in range(3)]
+        sets = {d: {"alice"} for d in days}
+        result = rolling_unique_count(days, sets, 7 * DAY)
+        assert all(v == 1 for v in result.values())
+
+    def test_new_author_added(self):
+        days = [DAY * i for i in range(3)]
+        sets = {DAY * 0: {"alice"}, DAY * 1: {"alice", "bob"}, DAY * 2: {"carol"}}
+        result = rolling_unique_count(days, sets, 7 * DAY)
+        assert result[DAY * 0] == 1
+        assert result[DAY * 1] == 2
+        assert result[DAY * 2] == 3
+
+    def test_eviction_removes_unique(self):
+        days = [DAY * i for i in range(8)]
+        sets = {d: set() for d in days}
+        sets[DAY * 0] = {"alice"}
+        sets[DAY * 1] = {"bob"}
+        sets[DAY * 7] = {"carol"}
+        result = rolling_unique_count(days, sets, 7 * DAY)
+        assert result[DAY * 6] == 2
+        assert result[DAY * 7] == 2
+
+    def test_partial_eviction(self):
+        days = [DAY * i for i in range(8)]
+        sets = {d: set() for d in days}
+        sets[DAY * 0] = {"alice"}
+        sets[DAY * 2] = {"alice"}
+        result = rolling_unique_count(days, sets, 7 * DAY)
+        assert result[DAY * 7] == 1
+
+    def test_empty(self):
+        assert rolling_unique_count([], {}, DAY) == {}

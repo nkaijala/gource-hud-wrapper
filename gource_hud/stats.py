@@ -48,3 +48,37 @@ def bucket_commits(commits: list[Commit]) -> tuple[list[int], dict[int, DayBucke
         days.append(t)
         t += DAY_SECONDS
     return days, buckets
+
+
+def rolling_sum(days: list[int], values: dict[int, int], window_seconds: int) -> dict[int, int]:
+    result: dict[int, int] = {}
+    queue: deque[tuple[int, int]] = deque()
+    running = 0
+    for t in days:
+        v = values[t]
+        queue.append((t, v))
+        running += v
+        while queue and (t - queue[0][0]) >= window_seconds:
+            running -= queue[0][1]
+            queue.popleft()
+        result[t] = running
+    return result
+
+
+def rolling_unique_count(days: list[int], sets_by_day: dict[int, set[str]], window_seconds: int) -> dict[int, int]:
+    result: dict[int, int] = {}
+    queue: deque[tuple[int, set[str]]] = deque()
+    counter: Counter[str] = Counter()
+    for t in days:
+        new_set = sets_by_day[t]
+        queue.append((t, new_set))
+        for elem in new_set:
+            counter[elem] += 1
+        while queue and (t - queue[0][0]) >= window_seconds:
+            _, old_set = queue.popleft()
+            for elem in old_set:
+                counter[elem] -= 1
+                if counter[elem] == 0:
+                    del counter[elem]
+        result[t] = len(counter)
+    return result
