@@ -4,6 +4,7 @@ from gource_hud.stats import (
     compute_churn, compute_efficiency, compute_wow_delta,
     format_trend_arrow, lang_from_path, EXTENSION_TO_LANGUAGE,
     compute_language_mix_7d, compute_change_size_distribution_7d,
+    DayMetrics, compute_all_metrics,
 )
 from gource_hud.git_log import Commit, FileChange, FileStatus
 
@@ -298,3 +299,45 @@ class TestChangeSizeDistribution7d:
         sizes[DAY * 7] = [10]
         result = compute_change_size_distribution_7d(days, sizes)
         assert result[DAY * 7] == (10, 10)
+
+
+class TestComputeAllMetrics:
+    def test_empty_input(self):
+        assert compute_all_metrics([]) == []
+
+    def test_single_day(self):
+        commits = [Commit(DAY * 10, "a" * 40, "alice", [FileChange("main.py", FileStatus.MODIFIED, 42, 7, False)])]
+        result = compute_all_metrics(commits)
+        assert len(result) == 1
+        m = result[0]
+        assert m.timestamp == DAY * 10
+        assert m.loc_added_1d == 42
+        assert m.loc_deleted_1d == 7
+        assert m.commits_1d == 1
+        assert m.authors_1d == 1
+        assert m.max_loc_total_1d == 49
+        assert m.cumulative_loc_delta == 35
+        assert m.cumulative_files_delta == 0
+
+    def test_three_days(self):
+        commits = [
+            Commit(DAY * 10, "a" * 40, "alice", [FileChange("a.py", FileStatus.MODIFIED, 10, 2, False)]),
+            Commit(DAY * 11, "b" * 40, "alice", [FileChange("b.py", FileStatus.ADDED, 5, 0, False)]),
+            Commit(DAY * 12, "c" * 40, "alice", [FileChange("a.py", FileStatus.MODIFIED, 3, 1, False)]),
+        ]
+        result = compute_all_metrics(commits)
+        assert len(result) == 3
+        m = result[2]
+        assert m.loc_added_7d == 18
+        assert m.loc_deleted_7d == 3
+        assert m.commits_7d == 3
+        assert m.cumulative_loc_delta == 15
+        assert m.cumulative_files_delta == 1
+
+    def test_has_derived_metrics(self):
+        commits = [Commit(DAY * 10, "a" * 40, "alice", [FileChange("a.py", FileStatus.MODIFIED, 80, 20, False)])]
+        result = compute_all_metrics(commits)
+        m = result[0]
+        assert m.churn_7d == 20
+        assert m.efficiency_7d == 60
+        assert m.arrow_loc == "\u2013 0"
