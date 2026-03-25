@@ -1,5 +1,5 @@
 # tests/test_git_log.py
-from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path
+from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry
 
 def test_file_status_values():
     assert FileStatus.ADDED.value == "A"
@@ -72,3 +72,45 @@ class TestParseNumstatOutput:
         raw = "1700000000\t" + "e" * 40 + "\tdev@x.com\n\n3\t1\tsrc/my file.py\n"
         commits = _parse_numstat_output(raw)
         assert commits[0].file_stats[0][2] == "src/my file.py"
+
+
+class TestParseNameStatusOutput:
+    def test_basic_amd(self):
+        raw = "1700000000\t" + "a" * 40 + "\n\nA\tnew_file.py\nM\texisting.py\nD\told_file.py\n"
+        commits = _parse_name_status_output(raw)
+        assert len(commits) == 1
+        entries = commits[0].entries
+        assert len(entries) == 3
+        assert entries[0].status == FileStatus.ADDED
+        assert entries[0].path == "new_file.py"
+        assert entries[1].status == FileStatus.MODIFIED
+        assert entries[2].status == FileStatus.DELETED
+    def test_rename(self):
+        raw = "1700000000\t" + "a" * 40 + "\n\nR100\told.py\tnew.py\n"
+        commits = _parse_name_status_output(raw)
+        entry = commits[0].entries[0]
+        assert entry.status == FileStatus.RENAMED
+        assert entry.path == "new.py"
+        assert entry.old_path == "old.py"
+        assert entry.score == 100
+    def test_copy(self):
+        raw = "1700000000\t" + "a" * 40 + "\n\nC075\tsrc.py\tdst.py\n"
+        commits = _parse_name_status_output(raw)
+        entry = commits[0].entries[0]
+        assert entry.status == FileStatus.COPIED
+        assert entry.score == 75
+    def test_type_change(self):
+        raw = "1700000000\t" + "a" * 40 + "\n\nT\tsymlink.txt\n"
+        commits = _parse_name_status_output(raw)
+        assert commits[0].entries[0].status == FileStatus.TYPE_CHANGED
+    def test_empty_commit(self):
+        raw = "1700000000\t" + "a" * 40 + "\n"
+        commits = _parse_name_status_output(raw)
+        assert len(commits) == 1
+        assert commits[0].entries == []
+    def test_empty_input(self):
+        assert _parse_name_status_output("") == []
+    def test_multiple_commits(self):
+        raw = "1700000000\t" + "a" * 40 + "\n\nA\ta.py\n\n1700086400\t" + "b" * 40 + "\n\nM\tb.py\n"
+        commits = _parse_name_status_output(raw)
+        assert len(commits) == 2

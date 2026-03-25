@@ -91,3 +91,49 @@ def _parse_numstat_output(raw: str) -> list[_NumstatCommit]:
     if current is not None:
         results.append(current)
     return results
+
+
+@dataclass
+class _NameStatusEntry:
+    status: FileStatus
+    path: str
+    old_path: Optional[str] = None
+    score: Optional[int] = None
+
+
+@dataclass
+class _NameStatusCommit:
+    timestamp: int
+    hash: str
+    entries: list[_NameStatusEntry] = field(default_factory=list)
+
+
+def _parse_name_status_output(raw: str) -> list[_NameStatusCommit]:
+    results: list[_NameStatusCommit] = []
+    current: _NameStatusCommit | None = None
+    for line in raw.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0].isdigit() and _is_hex(parts[1]):
+            if current is not None:
+                results.append(current)
+            current = _NameStatusCommit(timestamp=int(parts[0]), hash=parts[1])
+            continue
+        if current is not None and len(parts) >= 2:
+            status_code = parts[0]
+            if status_code in ("A", "M", "D", "T"):
+                current.entries.append(_NameStatusEntry(status=FileStatus(status_code), path=parts[1]))
+            elif status_code.startswith(("R", "C")):
+                letter = status_code[0]
+                try:
+                    score = int(status_code[1:]) if len(status_code) > 1 else 100
+                except ValueError:
+                    score = 100
+                fs = FileStatus.RENAMED if letter == "R" else FileStatus.COPIED
+                old_path = parts[1]
+                new_path = parts[2] if len(parts) >= 3 else parts[1]
+                current.entries.append(_NameStatusEntry(status=fs, path=new_path, old_path=old_path, score=score))
+    if current is not None:
+        results.append(current)
+    return results
