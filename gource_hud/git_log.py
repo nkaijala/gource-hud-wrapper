@@ -38,3 +38,56 @@ class Commit:
     @property
     def day_epoch(self) -> int:
         return (self.timestamp // 86400) * 86400
+
+
+_RENAME_BRACE_RE = re.compile(r"\{([^}]*) => ([^}]*)\}")
+
+
+def _resolve_numstat_path(raw_path: str) -> str:
+    m = _RENAME_BRACE_RE.search(raw_path)
+    if m:
+        result = raw_path[: m.start()] + m.group(2) + raw_path[m.end():]
+        return result.lstrip("/")
+    if " => " in raw_path:
+        return raw_path.split(" => ", 1)[1]
+    return raw_path
+
+
+@dataclass
+class _NumstatCommit:
+    timestamp: int
+    hash: str
+    author_email: str
+    file_stats: list[tuple[int, int, str, bool]] = field(default_factory=list)
+
+
+def _is_hex(s: str) -> bool:
+    return len(s) in (40, 64) and all(c in string.hexdigits for c in s)
+
+
+def _parse_numstat_output(raw: str) -> list[_NumstatCommit]:
+    results: list[_NumstatCommit] = []
+    current: _NumstatCommit | None = None
+    for line in raw.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].isdigit() and _is_hex(parts[1]):
+            if current is not None:
+                results.append(current)
+            current = _NumstatCommit(timestamp=int(parts[0]), hash=parts[1], author_email=parts[2])
+            continue
+        if current is not None and len(parts) >= 3:
+            adds_s, dels_s = parts[0], parts[1]
+            path = "\t".join(parts[2:])
+            path = _resolve_numstat_path(path)
+            if adds_s == "-" and dels_s == "-":
+                current.file_stats.append((0, 0, path, True))
+            else:
+                try:
+                    current.file_stats.append((int(adds_s), int(dels_s), path, False))
+                except ValueError:
+                    continue
+    if current is not None:
+        results.append(current)
+    return results
