@@ -1,5 +1,5 @@
 # tests/test_git_log.py
-from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry
+from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry, _merge_commits, _NumstatCommit, _NameStatusCommit
 
 def test_file_status_values():
     assert FileStatus.ADDED.value == "A"
@@ -114,3 +114,41 @@ class TestParseNameStatusOutput:
         raw = "1700000000\t" + "a" * 40 + "\n\nA\ta.py\n\n1700086400\t" + "b" * 40 + "\n\nM\tb.py\n"
         commits = _parse_name_status_output(raw)
         assert len(commits) == 2
+
+
+class TestMergeCommits:
+    def test_basic_merge(self):
+        ns = [_NumstatCommit(1700000000, "a" * 40, "dev@x.com", [(10, 3, "main.py", False)])]
+        st = [_NameStatusCommit(1700000000, "a" * 40, [_NameStatusEntry(FileStatus.MODIFIED, "main.py")])]
+        result = _merge_commits(ns, st)
+        assert len(result) == 1
+        assert result[0].files[0].status == FileStatus.MODIFIED
+        assert result[0].files[0].adds == 10
+        assert result[0].files[0].deletes == 3
+    def test_file_only_in_name_status(self):
+        ns = [_NumstatCommit(1700000000, "a" * 40, "dev@x.com", [])]
+        st = [_NameStatusCommit(1700000000, "a" * 40, [_NameStatusEntry(FileStatus.MODIFIED, "perms.sh")])]
+        result = _merge_commits(ns, st)
+        f = result[0].files[0]
+        assert f.path == "perms.sh"
+        assert f.adds == 0
+        assert f.deletes == 0
+    def test_commit_only_in_numstat(self):
+        ns = [_NumstatCommit(1700000000, "a" * 40, "dev@x.com", [(5, 2, "x.py", False)])]
+        st = []
+        result = _merge_commits(ns, st)
+        assert len(result) == 1
+        assert result[0].files[0].status == FileStatus.MODIFIED
+    def test_output_sorted_by_timestamp(self):
+        ns = [_NumstatCommit(1700086400, "b" * 40, "b@x.com", []), _NumstatCommit(1700000000, "a" * 40, "a@x.com", [])]
+        st = []
+        result = _merge_commits(ns, st)
+        assert result[0].timestamp < result[1].timestamp
+    def test_rename_merged(self):
+        ns = [_NumstatCommit(1700000000, "a" * 40, "dev@x.com", [(0, 0, "new.py", False)])]
+        st = [_NameStatusCommit(1700000000, "a" * 40, [_NameStatusEntry(FileStatus.RENAMED, "new.py", "old.py", 100)])]
+        result = _merge_commits(ns, st)
+        f = result[0].files[0]
+        assert f.status == FileStatus.RENAMED
+        assert f.old_path == "old.py"
+        assert f.rename_score == 100

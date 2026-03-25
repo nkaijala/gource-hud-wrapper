@@ -137,3 +137,41 @@ def _parse_name_status_output(raw: str) -> list[_NameStatusCommit]:
     if current is not None:
         results.append(current)
     return results
+
+
+def _merge_commits(numstat_commits: list[_NumstatCommit], name_status_commits: list[_NameStatusCommit]) -> list[Commit]:
+    ns_by_hash = {c.hash: c for c in numstat_commits}
+    st_by_hash = {c.hash: c for c in name_status_commits}
+    all_hashes = set(ns_by_hash) | set(st_by_hash)
+    result: list[Commit] = []
+    for h in all_hashes:
+        ns = ns_by_hash.get(h)
+        st = st_by_hash.get(h)
+        timestamp = ns.timestamp if ns else st.timestamp
+        author = ns.author_email if ns else ""
+        commit = Commit(timestamp=timestamp, hash=h, author_email=author)
+        status_lookup: dict[str, _NameStatusEntry] = {}
+        if st:
+            for entry in st.entries:
+                status_lookup[entry.path] = entry
+        seen_paths: set[str] = set()
+        if ns:
+            for adds, deletes, path, is_binary in ns.file_stats:
+                seen_paths.add(path)
+                entry = status_lookup.get(path)
+                commit.files.append(FileChange(
+                    path=path, status=entry.status if entry else FileStatus.MODIFIED,
+                    adds=adds, deletes=deletes, is_binary=is_binary,
+                    old_path=entry.old_path if entry else None,
+                    rename_score=entry.score if entry else None,
+                ))
+        if st:
+            for entry in st.entries:
+                if entry.path not in seen_paths:
+                    commit.files.append(FileChange(
+                        path=entry.path, status=entry.status, adds=0, deletes=0,
+                        is_binary=False, old_path=entry.old_path, rename_score=entry.score,
+                    ))
+        result.append(commit)
+    result.sort(key=lambda c: (c.timestamp, c.hash))
+    return result
