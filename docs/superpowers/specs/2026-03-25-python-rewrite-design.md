@@ -31,6 +31,7 @@ tests/
     test_stats.py
     test_overlay.py
     test_video.py
+    test_cli.py
 ```
 
 After `pip install -e .`, users get a `gource-hud` command. Defaults to current directory if no repo path given.
@@ -46,6 +47,7 @@ Positional:
 
 Resolution:
   --uhd / --4k           3840x2160 (default: 1920x1080)
+  --fhd                  1920x1080 (no-op, for backward compatibility)
 
 Anonymization:
   --no-anon              Show real usernames and file paths
@@ -157,14 +159,18 @@ class Anonymizer:
         # Extensions preserved
         # Dotfiles (.gitignore): entire name is base, no extension
 
-    def anonymize_commits(self, commits: list[Commit]) -> list[AnonymizedCommit]:
-        # Must receive timestamp-sorted input for deterministic assignment
+    def anonymize_commits(self, commits: list[Commit]) -> list[Commit]:
+        # Returns new Commit objects with anonymized author_email and file paths.
+        # Must receive timestamp-sorted input for deterministic assignment.
+        # The Commit dataclass is reused (not a separate AnonymizedCommit type)
+        # because downstream modules don't need to distinguish.
 ```
 
 Path anonymization preserves:
 - Directory hierarchy depth
 - File extensions (last dot only: `file.test.py` -> `f0001.py`)
 - Shared segments reuse tokens (`src/a.py` and `src/b.py` share `d0001`)
+- Directory and filename counters are separate (directories use `d0001+`, filenames use `f0001+`)
 
 ### Gource Log Output
 
@@ -172,7 +178,19 @@ The anonymized (or raw) commit data is written as a gource custom log file:
 ```
 timestamp|author|action|path
 ```
-Where action is A/M/D derived from FileStatus.
+
+FileStatus to gource action mapping:
+
+| FileStatus | Gource Action | Rationale |
+|------------|--------------|-----------|
+| ADDED      | A            | Direct mapping |
+| MODIFIED   | M            | Direct mapping |
+| DELETED    | D            | Direct mapping |
+| RENAMED    | M            | File persists at new path, treat as modification |
+| COPIED     | A            | New file created, treat as addition |
+| TYPE_CHANGED | M          | File persists, treat as modification |
+
+Note: The gource custom log is synthesized from `git log` output, not from `gource --output-custom-log`. This is intentional — it lets us use a single data source for both HUD stats and visualization.
 
 ### Edge Cases
 
@@ -277,13 +295,41 @@ Prefix sum. O(n). Used for:
 
 **Efficiency percentage:** `round(100 * (adds - deletes) / (adds + deletes))`, 0 when total is 0. Domain: [-100, +100].
 
-**Week-over-week trend deltas:** `values[i] - values[i-7]`, 0 when `i < 7`. Formatted as arrows: `"▲ +N"` / `"▼ N"` / `"– 0"`.
+**Week-over-week trend deltas:** `values[i] - values[i-7]`, 0 when `i < 7`. Formatted as arrows: `"▲ +N"` / `"▼ N"` / `"– 0"`. Note: this is index-based, which works correctly because the day list is gap-filled (index i-7 = exactly 7 calendar days earlier).
 
-**Language mix (7d):** Counter-based sliding window over `lang_loc_day[day][language] -> loc`. Top 3 by LOC share, percentage rounded.
+**Language mix (7d):** Count-based sliding window (max 7 entries in deque, not seconds-based). Since the `days` list is gap-filled, this is equivalent to 7 calendar days. Uses a Counter keyed by language name, incrementing on entry, decrementing on eviction, deleting at zero. Top 3 by LOC share, percentage rounded.
+
+```python
+def compute_language_mix_7d(
+    days: list[int],
+    lang_loc_day: dict[int, dict[str, int]],
+) -> dict[int, list[tuple[str, int]]]:
+    # Returns: day -> [(lang, pct), ...] up to 3 entries
+    # Window: deque of day timestamps, max length 7
+    # Counter: lang -> total LOC in window
+    # Evict when len(deque) > 7
+```
 
 Extension-to-language mapping covers: Python, TypeScript, JavaScript, Go, Rust, Java, Kotlin, Ruby, PHP, C, C++, C#, Swift, Obj-C, Shell, YAML, JSON, TOML, Markdown, SQL, R, Julia, Scala. Unknown -> "other".
 
-**Change size distribution (7d):** Per-commit size = adds + deletes. Collect sizes in 7d window, compute median and p90 via linear interpolation:
+**Change size distribution (7d):** Per-commit size = adds + deletes. Count-based sliding window (max 7 days), matching the language mix window semantics.
+
+```python
+def compute_change_size_distribution_7d(
+    days: list[int],
+    sizes_on_day: dict[int, list[int]],
+) -> dict[int, tuple[int, int]]:
+    # Returns: day -> (median, p90)
+    # Window: deque of day timestamps, max length 7
+    # On each day: extend window_sizes with today's commit sizes
+    # On eviction: remove evicted day's sizes from window_sizes
+    # Sort window_sizes, compute percentile(sorted, 0.5) and percentile(sorted, 0.9)
+    # Empty window -> (0, 0)
+```
+
+Simple collect-sort-compute per day (no incremental sorted structure). For typical 7-day windows with <500 commits, sorting is negligible.
+
+Percentile via linear interpolation:
 ```
 k = (n-1) * p
 f, c = floor(k), ceil(k)
@@ -399,7 +445,7 @@ Lang 7d  {lang1} {pct}% {lang2} {pct}% {lang3} {pct}%
 Change Size 7d  median {med}  •  p90 {p90}
 ```
 
-Numbers right-justified with thousands separators, column widths precomputed across all days to prevent horizontal jumping.
+Numbers right-justified with thousands separators, column widths precomputed across all days to prevent horizontal jumping. Net values (which can be negative) use `max(w_adds, w_deletes) + 1` width to account for the minus sign.
 
 ### Graph Rendering
 
@@ -436,9 +482,13 @@ Search order for monospaced fonts:
 
 ### Concurrent Rendering
 
-`ThreadPoolExecutor` with `min(16, cpu_count * 4)` workers (overridable via `--jobs`). Progress reported to stderr.
+`ThreadPoolExecutor` with `min(16, cpu_count * 4)` workers (overridable via `--jobs`). Progress reported to stderr. Note: despite the work being CPU-bound, ThreadPoolExecutor is acceptable because Pillow releases the GIL during C-level image operations, and the alternative (ProcessPoolExecutor) adds serialization complexity for the shared precomputed data.
 
 Precomputed before dispatch: layout metrics, format widths, text lines, graph point arrays, peak marker booleans. Workers do only Pillow draw + save.
+
+### Error Handling
+
+Individual frame render failures are collected (not fatal). After concurrent rendering completes, any missing frames are retried sequentially. If retries also fail, raise with a list of failed frame indices. This matches the original script's verify-and-fill logic (lines 694-700 of gource_anon_hud.sh).
 
 ### Test Cases
 
@@ -599,7 +649,7 @@ def main():
 ```toml
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "gource-hud"
