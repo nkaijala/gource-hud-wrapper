@@ -335,3 +335,207 @@ def _precompute_polyline_points(
     ]
 
     return pts_loc, pts_files, pts_flow_add, pts_flow_del
+
+
+# ---------------------------------------------------------------------------
+# Font loading
+# ---------------------------------------------------------------------------
+
+MONO_FONT_SEARCH_PATHS = [
+    # Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    # macOS
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/Library/Fonts/Courier New.ttf",
+    # Windows
+    "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/cour.ttf",
+]
+
+
+def find_mono_font() -> str:
+    """Return the path to a monospaced TrueType font, or raise RuntimeError."""
+    for path in MONO_FONT_SEARCH_PATHS:
+        if os.path.isfile(path):
+            return path
+    raise RuntimeError(
+        "No monospaced font found. Install DejaVu Sans Mono or pass --font-path."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Frame rendering
+# ---------------------------------------------------------------------------
+
+def _render_frame(
+    frame_index: int,
+    layout: LayoutMetrics,
+    font: ImageFont.FreeTypeFont,
+    lines: list[str],
+    pts_loc: list[tuple[int, int]],
+    pts_files: list[tuple[int, int]],
+    pts_flow_add: list[tuple[int, int]],
+    pts_flow_del: list[tuple[int, int]],
+    series: GraphSeries,
+    frame_w: int,
+    frame_h: int,
+    output_dir: str,
+) -> str:
+    """Render a single overlay frame and save to disk. Returns the output path."""
+    img = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Panel background
+    draw.rectangle(
+        [layout.rect_x1, layout.rect_y1, layout.rect_x2, layout.rect_y2],
+        fill=(0, 0, 0, 140),
+    )
+
+    # Graph borders (white 40% opacity)
+    border_color = (255, 255, 255, 102)
+    for bbox in (layout.graph1_bbox, layout.graph2_bbox, layout.graph3_bbox):
+        draw.rectangle(
+            [bbox[0], bbox[1], bbox[2], bbox[3]],
+            outline=border_color,
+            width=layout.stroke_width,
+        )
+
+    # Text lines
+    text_color = (255, 255, 255, 255)
+    stroke_color = (0, 0, 0, 255)
+    y = layout.text_y_start
+    for line in lines:
+        draw.text(
+            (layout.text_x, y), line, fill=text_color, font=font,
+            stroke_width=layout.stroke_width, stroke_fill=stroke_color,
+        )
+        y += layout.line_gap
+
+    # Graph labels
+    label_font_size = max(8, layout.font_size - 2)
+    try:
+        label_font = font.font_variant(size=label_font_size)
+    except Exception:
+        label_font = font
+    graph_labels = ["Cumulative LOC", "Cumulative Files", "LOC Flow 7d"]
+    for label, bbox in zip(graph_labels, (layout.graph1_bbox, layout.graph2_bbox, layout.graph3_bbox)):
+        draw.text(
+            (bbox[0] + 4, bbox[1] + 2), label,
+            fill=(255, 255, 255, 180), font=label_font,
+        )
+
+    # Polyline drawing (sliced to frame_index+1)
+    n = frame_index + 1
+
+    def draw_polyline(pts: list[tuple[int, int]], color: tuple[int, int, int, int]) -> None:
+        segment = pts[:n]
+        if len(segment) >= 2:
+            draw.line(segment, fill=color, width=layout.polyline_width)
+
+    # Graph 1: cumulative LOC - cyan
+    draw_polyline(pts_loc, (0, 255, 255, 220))
+    # Graph 2: cumulative files - lime green
+    draw_polyline(pts_files, (0, 255, 128, 220))
+    # Graph 3: flow adds - green, deletes - red
+    draw_polyline(pts_flow_add, (80, 255, 80, 220))
+    draw_polyline(pts_flow_del, (255, 80, 80, 220))
+
+    # Peak markers (gold circles for 7d, magenta for 30d)
+    marker_r = max(3, int(4 * layout.scale))
+    for i in range(n):
+        if i < len(series.is_new_max7) and series.is_new_max7[i]:
+            x = pts_loc[i][0]
+            y_marker = pts_loc[i][1]
+            draw.ellipse(
+                [x - marker_r, y_marker - marker_r, x + marker_r, y_marker + marker_r],
+                fill=(255, 215, 0, 220),
+            )
+        if i < len(series.is_new_max30) and series.is_new_max30[i]:
+            x = pts_loc[i][0]
+            y_marker = pts_loc[i][1]
+            draw.ellipse(
+                [x - marker_r, y_marker - marker_r, x + marker_r, y_marker + marker_r],
+                fill=(255, 0, 255, 220),
+            )
+
+    out_path = os.path.join(output_dir, f"overlay_{frame_index:05d}.png")
+    img.save(out_path, "PNG")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# render_overlays – public entry point
+# ---------------------------------------------------------------------------
+
+def render_overlays(
+    day_data: list[DayMetrics],
+    output_dir: str,
+    width: int,
+    height: int,
+    font_path: str | None = None,
+    panel_width: int = 640,
+    font_size: int = 14,
+    jobs: int = 0,
+    scale: float = 1.0,
+) -> int:
+    """Render transparent PNG overlays for each day.
+
+    Returns the number of frames rendered.
+    """
+    if not day_data:
+        return 0
+
+    # Auto-detect font
+    if font_path is None:
+        font_path = find_mono_font()
+    font = ImageFont.truetype(font_path, int(font_size * scale))
+
+    # Precompute layout, series, widths, lines, polyline points
+    layout = compute_layout(width, height, scale, font_size, panel_width)
+    series = compute_graph_series(day_data)
+    widths = compute_format_widths(day_data)
+    all_lines = format_day_lines(day_data, widths)
+    n_days = len(day_data)
+    pts_loc, pts_files, pts_flow_add, pts_flow_del = _precompute_polyline_points(
+        series, layout, n_days
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    if jobs <= 0:
+        jobs = min(os.cpu_count() or 1, n_days)
+
+    def render_one(i: int) -> str:
+        return _render_frame(
+            i, layout, font, all_lines[i],
+            pts_loc, pts_files, pts_flow_add, pts_flow_del,
+            series, width, height, output_dir,
+        )
+
+    # Render with thread pool
+    failed: list[int] = []
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {executor.submit(render_one, i): i for i in range(n_days)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                future.result()
+            except Exception:
+                failed.append(idx)
+
+    # Retry failed frames sequentially
+    for idx in failed:
+        try:
+            render_one(idx)
+        except Exception as exc:
+            print(f"Warning: frame {idx} failed: {exc}", file=sys.stderr)
+
+    return n_days

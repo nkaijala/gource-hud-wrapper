@@ -1,10 +1,14 @@
 import os
+import tempfile
+from unittest.mock import patch
 from gource_hud.overlay import (
     compute_layout, LayoutMetrics,
     thousands, fmt, compute_format_widths, format_day_lines,
     compute_graph_series, GraphSeries, _precompute_polyline_points,
+    find_mono_font, render_overlays,
 )
 from gource_hud.stats import DayMetrics
+from PIL import Image
 
 
 class TestComputeLayout:
@@ -132,3 +136,53 @@ class TestPolylinePoints:
         layout = compute_layout(1920, 1080, 1.0, 14, 640)
         pts_loc, _, _, _ = _precompute_polyline_points(series, layout, 1)
         assert len(pts_loc) == 1
+
+
+class TestFindMonoFont:
+    def test_finds_system_font(self):
+        try:
+            path = find_mono_font()
+            assert os.path.isfile(path)
+        except RuntimeError:
+            import pytest
+            pytest.skip("No system monospaced font found")
+
+    def test_raises_when_no_font(self):
+        import pytest
+        with patch("os.path.isfile", return_value=False):
+            with pytest.raises(RuntimeError, match="No monospaced font"):
+                find_mono_font()
+
+
+class TestRenderOverlays:
+    def test_empty_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            count = render_overlays([], tmpdir, 1920, 1080)
+            assert count == 0
+
+    def test_single_frame_output(self):
+        m = DayMetrics(timestamp=0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            count = render_overlays([m], tmpdir, 1920, 1080, jobs=1)
+            assert count == 1
+            out_path = os.path.join(tmpdir, "overlay_00000.png")
+            assert os.path.exists(out_path)
+            im = Image.open(out_path)
+            assert im.mode == "RGBA"
+            assert im.size == (1920, 1080)
+
+    def test_panel_not_transparent(self):
+        m = DayMetrics(timestamp=0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            render_overlays([m], tmpdir, 1920, 1080, jobs=1)
+            im = Image.open(os.path.join(tmpdir, "overlay_00000.png"))
+            pixel = im.getpixel((100, 1000))
+            assert pixel[3] > 0
+
+    def test_outside_panel_transparent(self):
+        m = DayMetrics(timestamp=0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            render_overlays([m], tmpdir, 1920, 1080, jobs=1)
+            im = Image.open(os.path.join(tmpdir, "overlay_00000.png"))
+            pixel = im.getpixel((1900, 10))
+            assert pixel[3] == 0
