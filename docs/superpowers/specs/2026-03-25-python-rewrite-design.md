@@ -64,8 +64,6 @@ HUD appearance:
   --font-file PATH       Path to monospaced TTF/OTF font
   --font-size SIZE       Base font size at 1080p (default: 14)
   --panel-width WIDTH    Base panel width at 1080p (default: 640)
-  --margin-left PX       Left margin (default: 28)
-  --margin-bottom PX     Bottom margin (default: 80)
 
 Performance:
   --jobs N               Overlay render workers (default: min(16, cpu_count*4))
