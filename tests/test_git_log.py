@@ -1,5 +1,5 @@
 # tests/test_git_log.py
-from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry, _merge_commits, _NumstatCommit, _NameStatusCommit
+from gource_hud.git_log import FileStatus, FileChange, Commit, _parse_numstat_output, _resolve_numstat_path, _parse_name_status_output, _NameStatusEntry, _merge_commits, _NumstatCommit, _NameStatusCommit, Anonymizer
 
 def test_file_status_values():
     assert FileStatus.ADDED.value == "A"
@@ -152,3 +152,71 @@ class TestMergeCommits:
         assert f.status == FileStatus.RENAMED
         assert f.old_path == "old.py"
         assert f.rename_score == 100
+
+
+class TestAnonymizer:
+    def test_author_deterministic(self):
+        a = Anonymizer()
+        assert a.anonymize_author("alice@x.com") == "Dev_1"
+        assert a.anonymize_author("bob@x.com") == "Dev_2"
+        assert a.anonymize_author("alice@x.com") == "Dev_1"
+    def test_path_preserves_structure(self):
+        a = Anonymizer()
+        result = a.anonymize_path("src/utils/helper.py")
+        parts = result.split("/")
+        assert len(parts) == 3
+        assert parts[0].startswith("d")
+        assert parts[1].startswith("d")
+        assert parts[2].startswith("f")
+        assert parts[2].endswith(".py")
+    def test_shared_dir_segment(self):
+        a = Anonymizer()
+        p1 = a.anonymize_path("src/a.py")
+        p2 = a.anonymize_path("src/b.py")
+        assert p1.split("/")[0] == p2.split("/")[0]
+    def test_shared_filename_base(self):
+        a = Anonymizer()
+        p1 = a.anonymize_path("src/foo.py")
+        p2 = a.anonymize_path("tests/foo.py")
+        assert p1.split("/")[-1] == p2.split("/")[-1]
+    def test_dotfile_no_extension(self):
+        a = Anonymizer()
+        result = a.anonymize_path(".gitignore")
+        assert "." not in result
+    def test_double_extension(self):
+        a = Anonymizer()
+        result = a.anonymize_path("file.test.py")
+        assert result.endswith(".py")
+    def test_root_level_file(self):
+        a = Anonymizer()
+        result = a.anonymize_path("Makefile")
+        assert "/" not in result
+        assert result.startswith("f")
+    def test_deeply_nested(self):
+        a = Anonymizer()
+        result = a.anonymize_path("a/b/c/d/e/f.txt")
+        parts = result.split("/")
+        assert len(parts) == 6
+        assert all(p.startswith("d") for p in parts[:5])
+        assert parts[5].startswith("f")
+        assert parts[5].endswith(".txt")
+    def test_anonymize_commits(self):
+        a = Anonymizer()
+        commits = [
+            Commit(100, "a" * 40, "alice@x.com", [FileChange("src/main.py", FileStatus.MODIFIED, 10, 2, False)]),
+            Commit(200, "b" * 40, "bob@x.com", [FileChange("src/main.py", FileStatus.MODIFIED, 5, 1, False)]),
+        ]
+        result = a.anonymize_commits(commits)
+        assert len(result) == 2
+        assert result[0].author_email == "Dev_1"
+        assert result[1].author_email == "Dev_2"
+        assert result[0].files[0].path == result[1].files[0].path
+    def test_anonymize_rename_old_path(self):
+        a = Anonymizer()
+        commits = [Commit(100, "a" * 40, "dev@x.com", [
+            FileChange("new.py", FileStatus.RENAMED, 0, 0, False, old_path="old.py", rename_score=100),
+        ])]
+        result = a.anonymize_commits(commits)
+        f = result[0].files[0]
+        assert f.old_path is not None
+        assert f.old_path.startswith("f")

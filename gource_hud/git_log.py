@@ -175,3 +175,58 @@ def _merge_commits(numstat_commits: list[_NumstatCommit], name_status_commits: l
         result.append(commit)
     result.sort(key=lambda c: (c.timestamp, c.hash))
     return result
+
+
+class Anonymizer:
+    def __init__(self) -> None:
+        self._author_map: dict[str, str] = {}
+        self._author_counter = 0
+        self._dir_map: dict[str, str] = {}
+        self._dir_counter = 0
+        self._file_map: dict[str, str] = {}
+        self._file_counter = 0
+
+    def anonymize_author(self, email: str) -> str:
+        if email not in self._author_map:
+            self._author_counter += 1
+            self._author_map[email] = f"Dev_{self._author_counter}"
+        return self._author_map[email]
+
+    def anonymize_path(self, path: str) -> str:
+        parts = path.split("/")
+        anon_parts: list[str] = []
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            if is_last:
+                dot_idx = part.rfind(".")
+                if dot_idx > 0:
+                    base = part[:dot_idx]
+                    ext = part[dot_idx:]
+                else:
+                    base = part
+                    ext = ""
+                if base not in self._file_map:
+                    self._file_counter += 1
+                    self._file_map[base] = f"f{self._file_counter:04d}"
+                anon_parts.append(self._file_map[base] + ext)
+            else:
+                if part not in self._dir_map:
+                    self._dir_counter += 1
+                    self._dir_map[part] = f"d{self._dir_counter:04d}"
+                anon_parts.append(self._dir_map[part])
+        return "/".join(anon_parts)
+
+    def anonymize_commits(self, commits: list[Commit]) -> list[Commit]:
+        result: list[Commit] = []
+        for c in commits:
+            anon_author = self.anonymize_author(c.author_email)
+            anon_files: list[FileChange] = []
+            for f in c.files:
+                anon_files.append(FileChange(
+                    path=self.anonymize_path(f.path), status=f.status,
+                    adds=f.adds, deletes=f.deletes, is_binary=f.is_binary,
+                    old_path=self.anonymize_path(f.old_path) if f.old_path else None,
+                    rename_score=f.rename_score,
+                ))
+            result.append(Commit(timestamp=c.timestamp, hash=c.hash, author_email=anon_author, files=anon_files))
+        return result
