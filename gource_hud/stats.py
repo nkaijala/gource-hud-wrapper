@@ -114,3 +114,106 @@ def percentile(sorted_values: list[int], p: float) -> int:
     if f == c:
         return sorted_values[int(k)]
     return int(round(sorted_values[f] * (c - k) + sorted_values[c] * (k - f)))
+
+
+def compute_churn(adds: int, deletes: int) -> int:
+    total = adds + deletes
+    if total == 0:
+        return 0
+    return int(round(100 * deletes / total))
+
+
+def compute_efficiency(adds: int, deletes: int) -> int:
+    total = adds + deletes
+    if total == 0:
+        return 0
+    return int(round(100 * (adds - deletes) / total))
+
+
+def compute_wow_delta(values: list[int], index: int, step: int = 7) -> int:
+    if index < step:
+        return 0
+    return values[index] - values[index - step]
+
+
+def format_trend_arrow(delta: int) -> str:
+    if delta > 0:
+        return f"\u25b2 +{delta}"
+    elif delta < 0:
+        return f"\u25bc {abs(delta)}"
+    return "\u2013 0"
+
+
+EXTENSION_TO_LANGUAGE: dict[str, str] = {
+    "py": "python", "pyi": "python", "pyx": "python", "ipynb": "python",
+    "ts": "typescript", "tsx": "typescript", "mts": "typescript", "cts": "typescript",
+    "js": "javascript", "jsx": "javascript", "mjs": "javascript", "cjs": "javascript",
+    "go": "go", "rs": "rust", "java": "java",
+    "kt": "kotlin", "kts": "kotlin",
+    "rb": "ruby", "rake": "ruby", "gemspec": "ruby",
+    "php": "php",
+    "c": "c", "h": "c",
+    "cc": "c++", "cpp": "c++", "cxx": "c++", "hh": "c++", "hpp": "c++", "hxx": "c++",
+    "cs": "c#", "swift": "swift",
+    "m": "obj-c", "mm": "obj-c",
+    "sh": "shell", "bash": "shell", "zsh": "shell", "fish": "shell",
+    "yml": "yaml", "yaml": "yaml",
+    "json": "json", "toml": "toml",
+    "md": "markdown", "mdx": "markdown",
+    "sql": "sql", "r": "r", "jl": "julia",
+    "scala": "scala", "sc": "scala",
+}
+
+
+def lang_from_path(path: str) -> str:
+    filename = path.rsplit("/", 1)[-1]
+    if "." not in filename:
+        return "other"
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return EXTENSION_TO_LANGUAGE.get(ext, "other")
+
+
+def compute_language_mix_7d(
+    days: list[int], lang_loc_day: dict[int, dict[str, int]]
+) -> dict[int, list[tuple[str, int]]]:
+    result: dict[int, list[tuple[str, int]]] = {}
+    window: deque[int] = deque()
+    counter: Counter[str] = Counter()
+    for t in days:
+        window.append(t)
+        for lang, loc in lang_loc_day.get(t, {}).items():
+            counter[lang] += loc
+        while len(window) > 7:
+            old_t = window.popleft()
+            for lang, loc in lang_loc_day.get(old_t, {}).items():
+                counter[lang] -= loc
+                if counter[lang] <= 0:
+                    del counter[lang]
+        total = sum(counter.values())
+        if total > 0:
+            top3 = counter.most_common(3)
+            result[t] = [(lang, int(round(100 * loc / total))) for lang, loc in top3]
+        else:
+            result[t] = []
+    return result
+
+
+def compute_change_size_distribution_7d(
+    days: list[int], sizes_on_day: dict[int, list[int]]
+) -> dict[int, tuple[int, int]]:
+    result: dict[int, tuple[int, int]] = {}
+    window: deque[int] = deque()
+    window_sizes: list[int] = []
+    for t in days:
+        window.append(t)
+        window_sizes.extend(sizes_on_day.get(t, []))
+        while len(window) > 7:
+            old_t = window.popleft()
+            for s in sizes_on_day.get(old_t, []):
+                window_sizes.remove(s)
+        if not window_sizes:
+            result[t] = (0, 0)
+        else:
+            sv = sorted(window_sizes)
+            result[t] = (percentile(sv, 0.5), percentile(sv, 0.9))
+    return result

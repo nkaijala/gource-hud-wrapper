@@ -1,6 +1,9 @@
 from gource_hud.stats import (
     DayBucket, bucket_commits, rolling_sum, rolling_unique_count,
     running_maxima, cumulative_series, percentile,
+    compute_churn, compute_efficiency, compute_wow_delta,
+    format_trend_arrow, lang_from_path, EXTENSION_TO_LANGUAGE,
+    compute_language_mix_7d, compute_change_size_distribution_7d,
 )
 from gource_hud.git_log import Commit, FileChange, FileStatus
 
@@ -176,3 +179,122 @@ class TestPercentile:
     def test_six_values(self):
         assert percentile([1, 3, 5, 7, 9, 11], 0.5) == 6
         assert percentile([1, 3, 5, 7, 9, 11], 0.9) == 10
+
+
+class TestChurnEfficiency:
+    def test_churn_zero_total(self):
+        assert compute_churn(0, 0) == 0
+
+    def test_churn_pure_adds(self):
+        assert compute_churn(100, 0) == 0
+
+    def test_churn_pure_deletes(self):
+        assert compute_churn(0, 100) == 100
+
+    def test_churn_even(self):
+        assert compute_churn(50, 50) == 50
+
+    def test_churn_rounding(self):
+        assert compute_churn(1, 2) == 67
+
+    def test_efficiency_zero_total(self):
+        assert compute_efficiency(0, 0) == 0
+
+    def test_efficiency_pure_adds(self):
+        assert compute_efficiency(100, 0) == 100
+
+    def test_efficiency_pure_deletes(self):
+        assert compute_efficiency(0, 100) == -100
+
+    def test_efficiency_even(self):
+        assert compute_efficiency(50, 50) == 0
+
+    def test_efficiency_negative(self):
+        assert compute_efficiency(1, 2) == -33
+
+
+class TestTrends:
+    def test_wow_delta_sufficient_history(self):
+        values = [10, 20, 30, 40, 50, 60, 70, 80]
+        assert compute_wow_delta(values, 7) == 70
+
+    def test_wow_delta_insufficient_history(self):
+        values = [10, 20, 30]
+        assert compute_wow_delta(values, 2) == 0
+
+    def test_format_arrow_positive(self):
+        assert format_trend_arrow(5) == "\u25b2 +5"
+
+    def test_format_arrow_negative(self):
+        assert format_trend_arrow(-3) == "\u25bc 3"
+
+    def test_format_arrow_zero(self):
+        assert format_trend_arrow(0) == "\u2013 0"
+
+
+class TestLangFromPath:
+    def test_python(self):
+        assert lang_from_path("src/main.py") == "python"
+
+    def test_typescript(self):
+        assert lang_from_path("lib/utils.tsx") == "typescript"
+
+    def test_unknown(self):
+        assert lang_from_path("Makefile") == "other"
+
+    def test_dotfile(self):
+        assert lang_from_path(".gitignore") == "other"
+
+    def test_double_extension(self):
+        assert lang_from_path("foo.test.js") == "javascript"
+
+
+class TestLanguageMix7d:
+    def test_single_language(self):
+        days = [DAY * 0]
+        lang_loc = {DAY * 0: {"python": 100}}
+        result = compute_language_mix_7d(days, lang_loc)
+        assert result[DAY * 0] == [("python", 100)]
+
+    def test_top_3_only(self):
+        days = [DAY * 0]
+        lang_loc = {DAY * 0: {"a": 40, "b": 30, "c": 20, "d": 10}}
+        result = compute_language_mix_7d(days, lang_loc)
+        assert len(result[DAY * 0]) == 3
+        assert result[DAY * 0][0][0] == "a"
+
+    def test_eviction(self):
+        days = [DAY * i for i in range(8)]
+        lang_loc = {d: {} for d in days}
+        lang_loc[DAY * 0] = {"python": 1000}
+        lang_loc[DAY * 7] = {"go": 100}
+        result = compute_language_mix_7d(days, lang_loc)
+        assert result[DAY * 7] == [("go", 100)]
+
+    def test_empty_window(self):
+        days = [DAY * 0]
+        lang_loc = {DAY * 0: {}}
+        result = compute_language_mix_7d(days, lang_loc)
+        assert result[DAY * 0] == []
+
+
+class TestChangeSizeDistribution7d:
+    def test_basic(self):
+        days = [DAY * 0]
+        sizes = {DAY * 0: [10, 30, 50]}
+        result = compute_change_size_distribution_7d(days, sizes)
+        assert result[DAY * 0] == (30, 46)
+
+    def test_empty_window(self):
+        days = [DAY * 0]
+        sizes = {DAY * 0: []}
+        result = compute_change_size_distribution_7d(days, sizes)
+        assert result[DAY * 0] == (0, 0)
+
+    def test_eviction(self):
+        days = [DAY * i for i in range(8)]
+        sizes = {d: [] for d in days}
+        sizes[DAY * 0] = [1000]
+        sizes[DAY * 7] = [10]
+        result = compute_change_size_distribution_7d(days, sizes)
+        assert result[DAY * 7] == (10, 10)
